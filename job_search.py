@@ -1,6 +1,5 @@
 import requests
 from bs4 import BeautifulSoup
-import ollama
 import json
 from urllib.parse import urljoin, urlparse, parse_qs
 import asyncio
@@ -9,20 +8,75 @@ import httpx
 from datetime import datetime
 import re
 from playwright.async_api import async_playwright, Browser, TimeoutError as PlaywrightTimeoutError
+import os
 
 # --- Configuration ---
-MAX_DEPTH = 1 # Keep depth low for testing with Playwright
+LLM_SERVER_URL = "http://wayne.local:6001/completion"
+MAX_DEPTH = 0 # Keep depth low for testing with Playwright
 ATS_DOMAINS = [
     'taleo.net', 'greenhouse.io', 'lever.co', 'workday.com', 
     'icims.com', 'eightfold.ai', 'myworkdayjobs.com'
 ]
 
 async def log_llm_response(prompt, response):
-    """Asynchronously logs LLM prompts and responses to a file."""
+    """Asynchronously logs LLM prompts and responses to llm_responses.log."""
     timestamp = datetime.now().isoformat()
     log_entry = {"timestamp": timestamp, "prompt": prompt, "response": response}
     async with aiofiles.open('llm_responses.log', 'a') as f:
         await f.write(json.dumps(log_entry) + "\n")
+
+async def log_detailed_llm_interaction(prompt, payload, full_response_content, error=None):
+    """Asynchronously logs detailed LLM request/response to all_llm_requests.log."""
+    timestamp = datetime.now().isoformat()
+    log_entry = {
+        "timestamp": timestamp,
+        "prompt_sent": prompt,
+        "request_payload": payload,
+        "raw_response_received": full_response_content,
+        "error": str(error) if error else None
+    }
+    async with aiofiles.open('all_llm_requests.log', 'a') as f:
+        await f.write(json.dumps(log_entry, indent=2) + "\n---\n")
+
+async def _call_llm_server(prompt: str, stream: bool = False, timeout: float = 600.0) -> str:
+    """Generic helper to call the Llama.cpp server with a given prompt."""
+    payload = {
+        "prompt": prompt,
+        "stream": stream,
+        "n_predict": -1,
+        "temperature": 0.1
+    }
+    
+    error_occurred = None
+    json_response = {}
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.post(LLM_SERVER_URL, json=payload)
+            response.raise_for_status()
+            
+            json_response = response.json()
+            content = json_response.get("content", "")
+            
+        return content
+    except httpx.ReadTimeout:
+        error_message = f"LLM call timed out after {timeout} seconds."
+        print(error_message)
+        error_occurred = error_message
+        return ""
+    except httpx.HTTPStatusError as e:
+        error_message = f"HTTP error calling LLM server: {e}"
+        print(error_message)
+        error_occurred = error_message
+        return ""
+    except Exception as e:
+        error_message = f"Error calling LLM server: {e}"
+        print(error_message)
+        error_occurred = error_message
+        return ""
+    finally:
+        # We log the raw response object in the detailed log
+        await log_detailed_llm_interaction(prompt, payload, json_response, error_occurred)
+
 
 def read_profile(file_path):
     with open(file_path, 'r') as f:
@@ -38,14 +92,14 @@ async def get_page_content(url: str, browser: Browser) -> str | None:
     page = None # Initialize page outside try block
     try:
         page = await browser.new_page()
-        await page.goto(url, timeout=30000) # Removed wait_until
-        await asyncio.sleep(5) # Increased sleep
+        await page.goto(url, timeout=30000)
+        await asyncio.sleep(5)
         content = await page.content()
         return content
     except PlaywrightTimeoutError:
         print(f"  - Timeout error while loading {url}.")
         if page:
-            return await page.content() # Return what we have so far
+            return await page.content()
         return None
     except Exception as e:
         print(f"  - Error scraping {url} with Playwright: {e}")
@@ -90,7 +144,6 @@ async def classify_links_with_llm(html_content, page_url):
 
     all_links = set(a_tag_links + json_links)
     
-    main_domain = get_main_domain(page_url)
     page_domain = urlparse(page_url).netloc
 
     filtered_links = []
@@ -108,7 +161,6 @@ async def classify_links_with_llm(html_content, page_url):
             
     links = sorted(list(set(filtered_links)))
 
-    # Limit the number of links sent to the LLM to prevent long prompts and timeouts
     MAX_LLM_LINKS = 50
     if len(links) > MAX_LLM_LINKS:
         print(f"  - Warning: Truncating {len(links)} links to {MAX_LLM_LINKS} for LLM classification.")
@@ -117,63 +169,50 @@ async def classify_links_with_llm(html_content, page_url):
     if not links:
         return [], []
 
-    prompt = f"""
-    You are a web scraping data processor. Your task is to classify URLs. Do not explain your reasoning.
-    The source URL is: {page_url}
-    You are provided with a list of links that are all from the exact same domain as the source URL.
-    
-    From this list, classify URLs into two categories:
-    1. 'job_post': A direct link to a specific job description.
-    2. 'navigation': A link to another page of job listings (e.g., "next", "page 2", "more jobs").
+    prompt = f"""You are an expert data extractor. Your task is to classify a list of URLs.
+You must respond ONLY with a single, valid JSON object. Do not add any conversational text, explanations, or markdown code blocks.
 
-    Return ONLY a single, valid JSON object wrapped in a markdown code block.
-    Example: ```json\n{{"job_post": ["URL1"], "navigation": ["URL2"]}}\n```
-    
-    Here is the list of links to classify:
-    {json.dumps(links, indent=2)}
-    """
-    
-    print("--- LLM Prompt for classify_links_with_llm ---")
-    print(prompt)
-    print("---------------------------------------------")
+The JSON object must have the following structure:
+{{
+  "job_post": ["<A_URL_that_is_a_direct_link_to_a_job_description>"],
+  "navigation": ["<A_URL_that_leads_to_another_page_of_job_listings>"]
+}}
 
-    full_response_content = "" # Initialize before try block
+---
 
-    async def _generate_and_accumulate_classify():
-        nonlocal full_response_content
-        async for chunk in await ollama.AsyncClient(host="http://wayne.local:11434").generate(
-            model="gemma3:27b",
-            prompt=prompt,
-            stream=True
-        ):
-            full_response_content += chunk.get('response', '')
+Classify the following URLs from the source URL: {page_url}
+
+{json.dumps(links, indent=2)}
+"""
+    
+    print("--- Calling LLM for link classification ---")
+    llm_content = await _call_llm_server(prompt)
+
+    if not llm_content:
+        return [], []
 
     try:
-        await asyncio.wait_for(_generate_and_accumulate_classify(), timeout=600.0)
-        
-        await log_llm_response(prompt, full_response_content)
-        
-        json_match = re.search(r"```json\s*([\s\S]*?)\s*```", full_response_content)
-        if not json_match:
-            print(f"  - No JSON markdown block found in LLM response for {page_url}.")
-            return [], []
-            
-        json_string = json_match.group(1)
+        json_match = re.search(r"```json\s*([\s\S]*?)\s*```", llm_content)
+        if json_match:
+            json_string = json_match.group(1).strip()
+        else:
+            # If no markdown is found, assume the whole content is the JSON string
+            json_string = llm_content.strip()
+
         classified_links = json.loads(json_string)
         
+        await log_llm_response(prompt, json.dumps(classified_links))
         return classified_links.get('job_post', []), classified_links.get('navigation', [])
-    except asyncio.TimeoutError:
-        error_message = f"Error processing LLM response for {page_url}: Ollama call timed out after 180 seconds."
-        print(error_message)
-        await log_llm_response(prompt, f"{error_message}, Raw response: {full_response_content}")
-        return [], []
     except Exception as e:
-        error_message = f"Error processing LLM response for {page_url}: {e}"
+        error_message = f"Error processing LLM JSON response for {page_url}: {e}"
         print(error_message)
-        await log_llm_response(prompt, f"{error_message}, Raw response: {full_response_content}")
+        await log_llm_response(prompt, f"{error_message}, Raw response: {llm_content}")
         return [], []
 
 async def match_job_description(job_description, profile):
+    # Properly escape job_description to avoid JSON errors in the payload
+    escaped_job_description = json.dumps(job_description)
+    
     prompt = f"""
     Is the following job a good match for the profile provided?
     Respond with only "yes" or "no".
@@ -185,38 +224,23 @@ async def match_job_description(job_description, profile):
 
     JOB DESCRIPTION:
     ---
-    {job_description}
+    {escaped_job_description}
     ---
     """
+    print("--- LLM Prompt for match_job_description ---")
+    print(prompt)
+    print("---------------------------------------------")
     
-    full_response_content = "" # Initialize before try block
-
-    async def _generate_and_accumulate_match():
-        nonlocal full_response_content
-        async for chunk in ollama.AsyncClient(host="http://wayne.local:11434").generate(
-            model="gemma3:27b",
-            prompt=prompt,
-            stream=True
-        ):
-            full_response_content += chunk.get('response', '')
-
-    try:
-        await asyncio.wait_for(_generate_and_accumulate_match(), timeout=180.0)
-        
-        await log_llm_response(prompt, full_response_content)
-        return full_response_content.strip().lower() == 'yes'
-    except asyncio.TimeoutError:
-        error_message = f"Error during qualification matching: Ollama call timed out after 180 seconds."
-        print(error_message)
-        await log_llm_response(prompt, f"{error_message}, Raw response: {full_response_content}")
-        return False
-    except Exception as e:
-        error_message = f"Error during qualification matching: {e}"
-        print(error_message)
-        await log_llm_response(prompt, f"{error_message}, Raw response: {full_response_content}")
-        return False
+    print("--- Calling LLM for job matching ---")
+    response = await _call_llm_server(prompt, timeout=180.0) # Shorter timeout for yes/no
+    is_match = response.strip().lower().startswith('yes')
+    await log_llm_response(prompt, response)
+    return is_match
 
 async def main():
+    if os.path.exists("prompt_test.json"):
+        os.remove("prompt_test.json")
+        
     profile = read_profile('profile.txt')
     initial_pages = read_career_pages('career_pages.txt')
     
@@ -225,7 +249,7 @@ async def main():
     all_found_jobs = set()
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True) # Launch browser once
+        browser = await p.chromium.launch(headless=True)
 
         # --- Discovery Phase ---
         print("--- " + " Starting Link Discovery Phase ---")
@@ -238,7 +262,7 @@ async def main():
             print(f"[Depth {depth}] Discovering links on: {url}")
             visited_urls.add(url)
             
-            html_content = await get_page_content(url, browser) # Pass browser to get_page_content
+            html_content = await get_page_content(url, browser)
             if not html_content:
                 continue
 
@@ -262,10 +286,13 @@ async def main():
                 print(f"  ({i+1}/{len(all_found_jobs)}) Analyzing job: {job_url}")
                 await all_jobs_file.write(f"{job_url}\n")
                 
-                job_content_html = await get_page_content(job_url, browser) # Pass browser to get_page_content
+                job_content_html = await get_page_content(job_url, browser)
                 if job_content_html:
                     job_soup = BeautifulSoup(job_content_html, 'html.parser')
                     job_text = job_soup.get_text(separator=' ', strip=True)
+                    if not job_text.strip():
+                        print("    -> Job description is empty, skipping.")
+                        continue
                     if await match_job_description(job_text, profile):
                         print(f"    -> MATCH FOUND!")
                         matching_jobs.append(job_url)
