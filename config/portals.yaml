@@ -1,0 +1,15 @@
+# Career portals to scrape
+# Each entry needs a name and URL pointing to the company's jobs/careers page
+# Optional: 'selector' to narrow down which part of the page contains job listings
+
+portals:
+  - name : "Visa"
+    url : "https://www.visa.co.in/en_in/jobs/?categories=Software%20Development%2FEngineering&cities=Bangalore&cities=Mumbai"
+  # - name: "Anthropic"
+  #   url: "https://www.anthropic.com/careers"
+
+  # - name: "Stripe"
+  #   url: "https://stripe.com/jobs/search"
+
+  # - name: "Vercel"
+  #   url: "https://vercel.com/careers"

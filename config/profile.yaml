@@ -1,0 +1,24 @@
+# Your professional profile — used by the LLM to match you with jobs
+
+name: "Pratyaydeep Ghanta"
+title: "Software Development Engineer 2"
+experience_years: 3.5
+
+skills:
+  - Python
+  - Javascript
+  - Flask
+  - AWS
+  - Docker
+  - PostgreSQL
+  - Kubernetes
+
+preferences:
+  location: "Remote"
+  role_type: "Full-time"
+  domain: "Developer tools, AI/ML, SaaS"
+
+summary: |
+  Full-stack engineer with 4 years of experience building web applications
+  and cloud-native services. Interested in developer tooling, AI-powered
+  products, and high-growth startups.
