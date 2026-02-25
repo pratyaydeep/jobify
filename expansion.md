@@ -127,6 +127,34 @@ Replace flat JSON files with a proper database (SQLite for single-user, PostgreS
 
 ---
 
+## Additional Ideas
+
+### 8. LLM Connection Pool
+
+Instead of creating a new HTTP client per LLM call, maintain a pool of persistent connections to the Ollama server. This reduces connection overhead and enables true concurrent inference — multiple jobs can be scored simultaneously over pre-established connections rather than serially opening and closing one at a time.
+
+### 9. LinkedIn Portal Discovery Service
+
+A separate background service that logs into LinkedIn using the user's credentials and discovers career portals automatically. The goal is not to find jobs on LinkedIn itself, but to find companies that are hiring (from job posts, "we're hiring" updates, recruiter activity) and extract their actual career page URLs. These discovered portals get auto-added to the portal list for the main scraping pipeline.
+
+### 10. AI Gateway Service
+
+A standalone microservice that sits between Jobify and multiple LLM providers. It manages API keys for different providers (Ollama instances, Claude, OpenAI, Gemini, etc.) and distributes requests across them. Benefits:
+- **Load balancing** — No single LLM server gets overloaded. Round-robin or least-connections routing.
+- **Provider failover** — If one provider is down or slow, requests automatically go to another.
+- **Cost optimization** — Route cheap tasks (link filtering) to free/local models and expensive tasks (scoring) to stronger cloud models.
+- **Key rotation** — Manage multiple API keys per provider to stay within rate limits.
+
+### 11. Persistent Job Catalog (Scrape Once, Query Forever)
+
+Instead of re-visiting every career portal on each run, build a persistent job catalog:
+- First visit: scrape the job page, extract structured details (title, skills required, experience range, description), and store in a database.
+- Subsequent runs: only scrape the portal's listing page to detect new/removed job URLs. For known URLs, use the stored data directly — no need to re-visit and re-parse individual job pages.
+- Periodically re-scrape stored jobs (e.g., weekly) to detect updates or removals.
+- This dramatically reduces run time and LLM calls — a portal with 25 jobs that adds 2 new ones per week only needs 2 job page visits instead of 25.
+
+---
+
 ## Technical Debt to Address First
 
 1. **Error handling in matcher.py** — Wrap `parse_job_page` and `score_job` in try/except so a single LLM timeout doesn't crash the pipeline.
