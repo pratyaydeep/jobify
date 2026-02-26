@@ -133,7 +133,18 @@ Replace flat JSON files with a proper database (SQLite for single-user, PostgreS
 
 Instead of creating a new HTTP client per LLM call, maintain a pool of persistent connections to the Ollama server. This reduces connection overhead and enables true concurrent inference — multiple jobs can be scored simultaneously over pre-established connections rather than serially opening and closing one at a time.
 
-### 9. LinkedIn Portal Discovery Service
+### 9. Browser Worker Pool with Scrape Queue
+
+Instead of a single browser visiting job pages one by one, run N Chromium instances (e.g., 2-3) as persistent workers that pull scrape jobs from a shared async queue:
+- A `ScrapeQueue` holds all pending URLs (portal pages + individual job pages).
+- Each browser worker runs in a loop: dequeue a URL, navigate, extract content, push result to a results queue.
+- The pipeline submits URLs and awaits results without caring which browser handled it.
+- Workers can be pre-warmed at pipeline start and reused across portals — no launch/close overhead per portal.
+- If a worker crashes or hangs, it can be restarted without affecting others.
+- Concurrency is tunable: 1 worker for a laptop, 5+ for a server with more RAM.
+- This naturally decouples "what to scrape" from "how to scrape" — later you could swap Chromium workers for a headless API service (Browserless, Playwright cloud) without changing the pipeline.
+
+### 10. LinkedIn Portal Discovery Service
 
 A separate background service that logs into LinkedIn using the user's credentials and discovers career portals automatically. The goal is not to find jobs on LinkedIn itself, but to find companies that are hiring (from job posts, "we're hiring" updates, recruiter activity) and extract their actual career page URLs. These discovered portals get auto-added to the portal list for the main scraping pipeline.
 
