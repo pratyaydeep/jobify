@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import logging
+from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
 
@@ -9,6 +11,8 @@ import yaml
 from jobify.llm import filter_job_links, parse_job_page, score_job
 from jobify.models import Job, Portal, Profile, ScoredJob
 from jobify.scraper import scrape_job_pages, scrape_portal
+
+logger = logging.getLogger(__name__)
 
 CONFIG_DIR = Path(__file__).resolve().parents[2] / "config"
 DATA_DIR = Path(__file__).resolve().parents[2] / "data"
@@ -46,11 +50,12 @@ def load_portals(path: Path | None = None) -> list[Portal]:
 async def run_pipeline(
     profile: Profile,
     portals: list[Portal],
-    on_status: callable = None,
+    on_status: Callable[[str], None] | None = None,
 ) -> list[ScoredJob]:
     """Full pipeline: scrape -> filter links -> visit jobs -> parse -> score -> rank."""
 
     def status(msg: str) -> None:
+        logger.info(msg)
         if on_status:
             on_status(msg)
 
@@ -71,7 +76,11 @@ async def run_pipeline(
         # 2. Ask the LLM which links are job postings
         status(f"  Identifying job links on {portal.name}...")
         link_dicts = [{"text": l.text, "href": l.href} for l in links]
-        job_urls = await filter_job_links(link_dicts, portal.name)
+        try:
+            job_urls = await filter_job_links(link_dicts, portal.name)
+        except Exception as exc:
+            status(f"  Failed to filter links for {portal.name}: {exc}")
+            continue
         status(f"  Identified {len(job_urls)} job links on {portal.name}")
 
         if not job_urls:
@@ -92,7 +101,11 @@ async def run_pipeline(
         for url, text in job_page_texts.items():
             if not text:
                 continue
-            job = await parse_job_page(text, portal.name, url)
+            try:
+                job = await parse_job_page(text, portal.name, url)
+            except Exception as exc:
+                status(f"  Failed to parse job at {url}: {exc}")
+                continue
             if job:
                 all_jobs.append(job)
 
@@ -130,7 +143,11 @@ async def run_pipeline(
     scored: list[ScoredJob] = []
     for i, job in enumerate(all_jobs, 1):
         status(f"  Scoring job {i}/{len(all_jobs)}: {job.title}")
-        score, reasoning = await score_job(job, profile)
+        try:
+            score, reasoning = await score_job(job, profile)
+        except Exception as exc:
+            status(f"  Failed to score {job.title}: {exc}")
+            continue
         scored.append(ScoredJob(job=job, score=score, reasoning=reasoning))
 
     # 6. Rank by score

@@ -148,7 +148,7 @@ Instead of a single browser visiting job pages one by one, run N Chromium instan
 
 A separate background service that logs into LinkedIn using the user's credentials and discovers career portals automatically. The goal is not to find jobs on LinkedIn itself, but to find companies that are hiring (from job posts, "we're hiring" updates, recruiter activity) and extract their actual career page URLs. These discovered portals get auto-added to the portal list for the main scraping pipeline.
 
-### 10. AI Gateway Service
+### 11. AI Gateway Service
 
 A standalone microservice that sits between Jobify and multiple LLM providers. It manages API keys for different providers (Ollama instances, Claude, OpenAI, Gemini, etc.) and distributes requests across them. Benefits:
 - **Load balancing** — No single LLM server gets overloaded. Round-robin or least-connections routing.
@@ -156,7 +156,7 @@ A standalone microservice that sits between Jobify and multiple LLM providers. I
 - **Cost optimization** — Route cheap tasks (link filtering) to free/local models and expensive tasks (scoring) to stronger cloud models.
 - **Key rotation** — Manage multiple API keys per provider to stay within rate limits.
 
-### 11. Persistent Job Catalog (Scrape Once, Query Forever)
+### 12. Persistent Job Catalog (Scrape Once, Query Forever)
 
 Instead of re-visiting every career portal on each run, build a persistent job catalog:
 - First visit: scrape the job page, extract structured details (title, skills required, experience range, description), and store in a database.

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 import sys
+from pathlib import Path
 
 from rich.console import Console
 from rich.table import Table
@@ -10,6 +12,23 @@ from rich.table import Table
 from jobify.matcher import load_portals, load_profile, run_pipeline
 
 console = Console()
+
+LOG_DIR = Path(__file__).resolve().parents[2] / "logs"
+
+
+def _setup_logging(verbose: bool = False) -> None:
+    """Configure logging to file and optionally to stderr."""
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    handlers: list[logging.Handler] = [
+        logging.FileHandler(LOG_DIR / "jobify.log"),
+    ]
+    if verbose:
+        handlers.append(logging.StreamHandler())
+    logging.basicConfig(
+        level=logging.DEBUG if verbose else logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        handlers=handlers,
+    )
 
 
 def cmd_scrape(args: argparse.Namespace) -> None:
@@ -91,6 +110,10 @@ def main() -> None:
         prog="jobify",
         description="Automated job search — scrape career portals, match with your profile using a local LLM",
     )
+    parser.add_argument(
+        "-v", "--verbose", action="store_true",
+        help="Enable verbose logging to stderr",
+    )
     sub = parser.add_subparsers(dest="command")
 
     sub.add_parser("scrape", help="Run the full job search pipeline")
@@ -98,6 +121,7 @@ def main() -> None:
     sub.add_parser("profile", help="Show your current profile")
 
     args = parser.parse_args()
+    _setup_logging(verbose=args.verbose)
 
     if args.command is None:
         parser.print_help()

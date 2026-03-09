@@ -1,24 +1,34 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
 
 import httpx
+from dotenv import load_dotenv
 
 from jobify.models import Job, Profile
 
-OLLAMA_BASE = "http://wayne:11434"
-MODEL = "gemma3n"
+load_dotenv()
+
+logger = logging.getLogger(__name__)
+
+OLLAMA_BASE = os.getenv("JOBIFY_OLLAMA_BASE", "http://localhost:11434")
+MODEL = os.getenv("JOBIFY_MODEL", "gemma3n")
 
 
 async def _generate(prompt: str, model: str = MODEL) -> str:
     """Call Ollama's /api/generate endpoint and return the response text."""
+    logger.debug("LLM request to %s model=%s prompt_len=%d", OLLAMA_BASE, model, len(prompt))
     async with httpx.AsyncClient(timeout=600.0) as client:
         resp = await client.post(
             f"{OLLAMA_BASE}/api/generate",
             json={"model": model, "prompt": prompt, "stream": False},
         )
         resp.raise_for_status()
-        return resp.json()["response"]
+        response = resp.json()["response"]
+        logger.debug("LLM response len=%d", len(response))
+        return response
 
 
 def _parse_json_array(text: str) -> list[dict]:
@@ -81,6 +91,7 @@ async def filter_job_links(
     if not links:
         return []
     capped = links[:200]
+    logger.info("Filtering %d links for portal %s", len(capped), portal_name)
     prompt = _build_filter_links_prompt(capped, portal_name)
     raw = await _generate(prompt)
     indices = _parse_json_array(raw)
@@ -125,10 +136,12 @@ async def parse_job_page(
     """
     if not page_text.strip():
         return None
+    logger.info("Parsing job page from %s: %s", portal_name, job_url)
     prompt = _build_parse_job_prompt(page_text, portal_name)
     raw = await _generate(prompt)
     data = _parse_json_object(raw)
     if not data:
+        logger.warning("Failed to parse JSON from LLM response for %s", job_url)
         return None
     min_exp = data.get("min_experience_years")
     if min_exp is not None:
@@ -186,6 +199,7 @@ IMPORTANT: Return ONLY the JSON object, no other text."""
 
 async def score_job(job: Job, profile: Profile) -> tuple[float, str]:
     """Use the LLM to score how well a job matches the profile."""
+    logger.info("Scoring job: %s at %s", job.title, job.company)
     prompt = _build_scoring_prompt(job, profile)
     raw = await _generate(prompt)
     result = _parse_json_object(raw)

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from urllib.parse import urljoin
 
 from playwright.async_api import Page, async_playwright
 
 from jobify.models import Portal
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -100,11 +103,13 @@ async def _dismiss_cookie_banner(page: Page) -> None:
 async def scrape_job_page(page: Page, url: str, timeout_ms: int = 30000) -> str:
     """Visit a single job posting page and return its text content."""
     try:
+        logger.debug("Visiting job page: %s", url)
         await page.goto(url, wait_until="networkidle", timeout=timeout_ms)
         await _dismiss_cookie_banner(page)
         await asyncio.sleep(3)
         return await page.inner_text("body")
-    except Exception:
+    except Exception as exc:
+        logger.warning("Failed to scrape job page %s: %s", url, exc)
         return ""
 
 
@@ -115,6 +120,7 @@ async def scrape_portal(
 
     Returns (all_links, page_text_for_context).
     """
+    logger.info("Scraping portal: %s (%s)", portal.name, portal.url)
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True)
         page = await browser.new_page()
@@ -128,6 +134,7 @@ async def scrape_portal(
 
         # Extract all links
         links = await _extract_links(page, portal.url)
+        logger.info("Extracted %d links from %s", len(links), portal.name)
 
         # Also grab page text for context (helps LLM filter links)
         if portal.selector:
@@ -145,6 +152,7 @@ async def scrape_job_pages(
     job_urls: list[str], timeout_ms: int = 20000
 ) -> dict[str, str]:
     """Visit each job URL and return {url: page_text}."""
+    logger.info("Scraping %d job pages", len(job_urls))
     results: dict[str, str] = {}
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True)
